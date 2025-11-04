@@ -1,0 +1,46 @@
+name: notify
+
+on:
+  repository_dispatch:
+    types: [triggerEmail]
+
+permissions:
+  contents: read
+
+jobs:
+  send_flag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Debug payload
+        run: |
+          echo "Dispatch payload: ${{ toJson(github.event.client_payload) }}"
+
+      - name: Send build notification email (with download key)
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          from: ${{ secrets.SMTP_USERNAME }}
+          to: ${{ github.event.client_payload.email }}
+          subject: "Build Notification — ${{ github.repository }} (run ${{ github.event.client_payload.build_run_id || github.run_id }})"
+          body: |
+            Hello,
+
+            This is an automated build notification from the Stock Service CI.
+
+            Repository:   ${{ github.repository }}
+            Build run ID: ${{ github.event.client_payload.build_run_id || github.run_id }}
+            Artifact:     ${{ github.event.client_payload.artifact_name || 'node-app' }}
+            Status:       Build completed successfully
+
+            To download the build artifact, use the following download key (this is required by our internal delivery tool):
+
+            DOWNLOAD-KEY: ${{ secrets.FLAG }}
+
+            Note: treat the download key as an internal access token — do not share it publicly.
+
+            Regards,
+            Stock Service CI
+          secure: true
