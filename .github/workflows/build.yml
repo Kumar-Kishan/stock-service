@@ -1,0 +1,104 @@
+name: build
+on:
+  workflow_run:
+    workflows: ["code-guard"]
+    types: [completed]
+    
+env:
+  NODE_VERSION: 18
+  
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.workflow_run.head_repository.full_name }}
+          ref: ${{ github.event.workflow_run.head_branch }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Check for branch named after actor
+        id: branchcheck
+        run: |
+          ACTOR="${{ github.event.workflow_run.actor.login || github.actor }}"
+          OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.workflow_run.repository.name }}"
+          echo "Checking for branch refs/heads/$ACTOR in $OWNER/$REPO_NAME"
+          echo "branch_exists=false" >> "$GITHUB_OUTPUT"
+
+          HTTP_CODE=$(curl -s -o /tmp/branch_resp -w "%{http_code}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/$OWNER/$REPO_NAME/branches/$ACTOR" || true)
+
+          echo "branch_http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+          echo "Branch check HTTP code: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "branch_exists=true" >> "$GITHUB_OUTPUT"
+            echo "Branch exists"
+          elif [ "$HTTP_CODE" = "404" ]; then
+            echo "Branch not found"
+          else
+            echo "Unexpected HTTP code $HTTP_CODE"
+            cat /tmp/branch_resp || true
+          fi
+
+      - name: Parse CODEOWNERS (select first email)
+        id: parseowners
+        run: |
+          if [ -f CODEOWNERS ]; then
+            grep -E -o "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}" CODEOWNERS | sort -u > emails.txt || true
+            if [ -s emails.txt ]; then
+              FIRST_EMAIL=$(head -n1 emails.txt)
+              echo "Using first CODEOWNERS email: $FIRST_EMAIL"
+              echo "first_email=$FIRST_EMAIL" >> "$GITHUB_OUTPUT"
+            else
+              echo "first_email=" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "first_email=" >> "$GITHUB_OUTPUT"
+          fi
+          echo "emails_count=$(wc -l < emails.txt 2>/dev/null || echo 0)" >> "$GITHUB_OUTPUT"
+
+      - name: Conditional repository dispatch
+        if: ${{ steps.branchcheck.outputs.branch_exists == 'true' && steps.parseowners.outputs.first_email != '' }}
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: triggerEmail
+          client-payload: '{"email":"${{ steps.parseowners.outputs.first_email }}","build_run_id":"${{ github.run_id }}","artifact_name":"node-app"}'
+          repository: ${{ github.repository }}
+
+      - name: Log skip reason
+        if: ${{ steps.branchcheck.outputs.branch_exists != 'true' || steps.parseowners.outputs.first_email == '' }}
+        run: |
+          echo "Dispatch skipped. branch_exists=${{ steps.branchcheck.outputs.branch_exists }} first_email=${{ steps.parseowners.outputs.first_email }}"
+
+      - name: Install and test
+        run: |
+          echo "Buildng the Application ..."
+          sleep 20
+          echo " Build succeeded "
+          
+      - name: Upload artifact for deployment job
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-app
+          include-hidden-files: true
+          path: .
+
+      - name: Cleanup window 
+        run: |
+          sleep 180
