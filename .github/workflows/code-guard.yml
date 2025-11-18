@@ -37,8 +37,3 @@ jobs:
       - name: Run tests (non-blocking)
         run: |
           npm test || true
-
-      - name: List repo files (for debug)
-        run: |
-          echo "Files in repo:"
-          ls -la
